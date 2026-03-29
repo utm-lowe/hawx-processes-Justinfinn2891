@@ -43,6 +43,14 @@ struct proc proc[NPROC];
 void 
 proc_init(void)
 {
+  struct proc *p; 
+  void *page;
+  for(int i = 0; i < NPROC; i++){
+   p = &proc[i];
+    page = vm_page_alloc();
+    p->kstack = (uint64) KSTACK(i);
+    vm_page_insert(kernel_pagetable, page, p->kstack, PTE_R);
+  }
     // You need to loop over all the proc structs and set up their stacks
     // This setup requires two steps:
     //   1.) Use the KSTACK macro to set up the kstack field in the struct
@@ -65,6 +73,18 @@ proc_load_user_init(void)
     void *bin = &_binary_user_init_start;
     struct proc *p = 0x00;
 
+    for(int i = 0; i < NPROC; i++) {
+        if(proc[i].state == UNUSED) {
+            p = &proc[i];
+            p->pid = nextpid++;
+            p->state = USED;
+            break;
+        }
+    }
+    p->state = RUNNABLE;
+    proc_load_elf(p, bin);
+    
+
     // Allocate a new process. If there is no process avaialble, panic.
     // Use proc_load_elf to load up the elf string. 
     // As an additional hint, I have defined the variables you need 
@@ -83,6 +103,34 @@ proc_load_user_init(void)
 struct proc* 
 proc_alloc(void)
 {
+
+
+  struct proc* p = 0;
+
+  for (int i = 0; i < NPROC; i++) {
+      if (proc[i].state == UNUSED) {
+          p = &proc[i];
+          break;
+      }
+  }
+
+  if(p == 0){return 0;}
+
+  p->pid = nextpid++;
+  p->state = USED;
+
+  p->trapframe = vm_page_alloc();
+  
+  memset(&p->context, 0, sizeof(p->context));
+
+
+  p->pagetable = proc_pagetable(p);
+  if(p->pagetable == 0){
+    vm_page_free(p->trapframe);
+    p->state = UNUSED;
+    return 0;
+  }
+
     // Search for an unused process in the proc array. If you do 
     // not find one, return 0. If you do find one, do the following:
     //   1.) Set the pid field to the next available pid. 
@@ -111,13 +159,24 @@ proc_alloc(void)
 void 
 proc_free(struct proc *p)
 {
-    // Free the process's trapframe, empty its pagetable,
-    // and reset all fields to zero. The state of the process
-    // should be "UNUSED".
-    // HINT: Functions I used
-    //         vm_page_free
-    //         proc_free_pagetable
-    // YOUR CODE HERE
+
+    if (p->trapframe) {
+        vm_page_free(p->trapframe);
+        p->trapframe = 0;
+    }
+
+    if (p->pagetable) {
+        proc_free_pagetable(p->pagetable, p->sz);
+        p->pagetable = 0;
+    }
+
+    // Reset fields
+    p->pid = 0;
+    p->sz = 0;
+  
+
+    // Mark as unused
+    p->state = UNUSED;
 }
 
 
