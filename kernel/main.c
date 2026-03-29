@@ -9,7 +9,6 @@
 #include "disk.h"
 #include "string.h"
 #include "tests.h"
-
 void swtch(struct context *old, struct context *new);
 
 // start() jumps here in supervisor mode
@@ -34,13 +33,11 @@ main()
 
   //initialize the device interrupts
   plicinit();
-
   // initialize other kernel subsystems
   proc_init();
 
   // load up the user space
   proc_load_user_init();
-
   // enter the scheduler
   scheduler();
 
