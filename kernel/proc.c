@@ -43,16 +43,26 @@ struct proc proc[NPROC];
 void 
 proc_init(void)
 {
+
   struct proc *p; 
   void *page; 
 
   for(int i = 0; i < NPROC; i++){
     p = &proc[i];
-
+    p->state = UNUSED;
+    
     p->kstack = (uint64) KSTACK(i);
+
     page = vm_page_alloc();
-    vm_page_insert(kernel_pagetable, page, p->kstack, PTE_R);
+    memset(page, 0, PGSIZE);
+    if(page == 0)
+      panic("faield");
+
+    if(vm_page_insert(kernel_pagetable, page, p->kstack, PTE_R | PTE_W) != 0) {panic("failed");}
+
+
   }
+
     // You need to loop over all the proc structs and set up their stacks
     // This setup requires two steps:
     //   1.) Use the KSTACK macro to set up the kstack field in the struct
