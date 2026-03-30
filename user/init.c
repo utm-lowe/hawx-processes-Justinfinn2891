@@ -11,12 +11,10 @@ int main()
   int pid;
 
   printf("Elf Loading...PASSED\n");
-
   // Bring up the rest of userspace (which is not much, just yet!)
   start_daemons();
   printf("Daemons Started...PASSED\n");
-
-  // Test out cloning and scheduling
+    // Test out cloning and scheduling
   printf("Scheduler and Clone test...");
   if(!clone()) {
     for(i=0; i<10; i++) {

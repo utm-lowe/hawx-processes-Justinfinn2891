@@ -45,21 +45,26 @@ void proc_init(void)
     struct proc *p;
     void *page;
 
-    for(int i = 0; i < NPROC; i++){
-        p = &proc[i];
-        p->state = UNUSED;
-        p->kstack = (uint64) KSTACK(i);
-        p->pid = 0;
-        p->sz = 0;
-        p->pagetable = 0;
-        p->trapframe = vm_page_alloc();
-        memset(p->trapframe, 0, PGSIZE);
-        page = vm_page_alloc();
-        memset(page, 0, PGSIZE);
+      for(p = proc; p < &proc[NPROC]; p++){
+    p->kstack = KSTACK(p-proc);
 
-        if (vm_page_insert(kernel_pagetable, page, p->kstack + PGSIZE, PTE_R | PTE_W) != 0)
-            panic("proc_init: stack map failed");
+    page = vm_page_alloc();
+    if(page == 0){
+      panic("proc_init: vm_page_alloc has failed");
     }
+
+    if(vm_page_insert(kernel_pagetable, p->kstack, (uint64)page, PTE_R | PTE_W) < 0){
+      panic("proc_init: vm_page_insert has failed");
+    }
+    p->state = UNUSED;
+    p->pid = 0;
+    p->trapframe = 0;
+    p->pagetable = 0;
+    p->sz = 0;
+
+    memset(&p->context, 0, sizeof(p->context));
+  }
+
 }
 
 
@@ -69,20 +74,15 @@ struct proc*
 proc_load_user_init(void)
 {
     void *bin = &_binary_user_init_start;
-    struct proc *p = 0x00;
+struct proc *p = proc_alloc();
+if(p == 0)
+    panic("proc_load_user_init: alloc failed");
 
-    for(int i = 0; i < NPROC; i++) {
-        if(proc[i].state == UNUSED) {
-            p = &proc[i];
-            p->pid = nextpid++;
-            p->state = USED;
-            break;
-        }
-    }
-    p->state = RUNNABLE;
-    proc_load_elf(p, bin);
+if(proc_load_elf(p, bin) < 0)
+    panic("proc_load_user_init: load failed");
+
+p->state = RUNNABLE;
     
-    printf("DAWDAWd");
     // Allocate a new process. If there is no process avaialble, panic.
     // Use proc_load_elf to load up the elf string. 
     // As an additional hint, I have defined the variables you need 
@@ -101,8 +101,6 @@ proc_load_user_init(void)
 struct proc* 
 proc_alloc(void)
 {
-
-    printf("DAWDAWd");
   struct proc* p = 0;
 
   for (int i = 0; i < NPROC; i++) {
@@ -112,43 +110,26 @@ proc_alloc(void)
       }
   }
 
-  if(p == 0){return 0;}
+  if(p == 0)
+    return 0;
 
   p->pid = nextpid++;
   p->state = USED;
 
   p->trapframe = vm_page_alloc();
-  
-  memset(&p->context, 0, sizeof(p->context));
-
-
-  p->pagetable = proc_pagetable(p);
-  if(p->pagetable == 0){
-    vm_page_free(p->trapframe);
+  if(p->trapframe == 0){
     p->state = UNUSED;
     return 0;
   }
 
-    // Search for an unused process in the proc array. If you do 
-    // not find one, return 0. If you do find one, do the following:
-    //   1.) Set the pid field to the next available pid. 
-    //       (be sure to update nextpid)
-    //   2.) Allocate a trapframe page for the proces.
-    //   3.) Set the trapframe page to all zeroes.
-    //   4.) Allocate an empty page table for the process.
-    //   5.) Set the return address in the processe's context to 
-    //       return to usertrapret.
-    //   6.) Set the process stack pointer to one address past the end of the
-    //       kstack page.
-    // HINTS: This function combines several ideas from xv6 function, but it 
-    //        does require adaptation. 
-    //        I used the following functions:
-    //          vm_pagealloc
-    //          proc_free
-    //          memset
-    //          proc_pagetable
-    // YOUR CODE HERE
-    return 0;
+  memset(p->trapframe, 0, PGSIZE);
+  memset(&p->context, 0, sizeof(p->context));
+
+
+  p->context.ra = (uint64)usertrapret;
+  p->context.sp = p->kstack + PGSIZE;
+
+  return p;
 }
 
 
@@ -157,7 +138,7 @@ proc_alloc(void)
 void 
 proc_free(struct proc *p)
 {
-    printf("DAWDAWd");
+    
     if (p->trapframe) {
         vm_page_free(p->trapframe);
         p->trapframe = 0;
@@ -168,12 +149,11 @@ proc_free(struct proc *p)
         p->pagetable = 0;
     }
 
-    // Reset fields
     p->pid = 0;
     p->sz = 0;
-  
 
-    // Mark as unused
+    printf("Yes");
+
     p->state = UNUSED;
 }
 
@@ -191,7 +171,6 @@ proc_load_elf(struct proc *p, void *bin)
     uint64 sz = 0;
     pagetable_t pagetable = 0;
     pagetable_t old_pagetable;
-
     elf = *(struct elfhdr*) bin;
     if(elf.magic != ELF_MAGIC)
         goto bad;
@@ -259,21 +238,26 @@ bad:
 //   Use proc_shrink to decrease the zie of the process.
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64 proc_resize(pagetable_t pagetable, uint64 oldsz, uint64 newsz) 
-{    printf("DAWDAWd");
+{    
     if(newsz > oldsz) {
-        for (uint64 a = PGROUNDUP(oldsz); a < PGROUNDUP(newsz); a += PGSIZE) {
-            void* page = vm_page_alloc();
-            if (!page)
-                return 0;
+    for (uint64 a = PGROUNDUP(oldsz); a < newsz; a += PGSIZE) {
 
-            memset(page, 0, PGSIZE);
-
-            if (vm_page_insert(pagetable, page, a, PTE_R | PTE_W | PTE_X | PTE_U) != 0) {
-                vm_page_free(page);
-                return 0;
-            }
+        pte_t *pte = walk_pgtable(pagetable, a, 0);
+        if (pte && (*pte & PTE_V)) {
+            continue;
         }
-        return newsz;
+
+        void* page = vm_page_alloc();
+        if (page == 0)
+            return 0;
+
+        if (vm_page_insert(pagetable, a, (uint64)page,
+            PTE_R | PTE_W | PTE_X | PTE_U) != 0) {
+            vm_page_free(page);
+            return 0;
+        }
+    }
+    return newsz;
     } else {
         return proc_shrink(pagetable, oldsz, newsz);
     }
@@ -304,7 +288,7 @@ proc_vmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
     memmove(mem, (char*)pa, PGSIZE);
 
-    if(vm_page_insert(new, mem, i, flags) != 0){
+   if(vm_page_insert(new, i, (uint64)mem, flags) != 0){
         vm_page_free(mem);
         goto err;
     }
@@ -332,14 +316,12 @@ proc_pagetable(struct proc *p)
     if (!pagetable)
         return 0;
 
-    // trampoline is already physical memory
-    if(vm_page_insert(pagetable, (void*)trampoline, TRAMPOLINE, PTE_R | PTE_X) != 0){
+  if(vm_page_insert(pagetable, TRAMPOLINE, (uint64)trampoline, PTE_R | PTE_X) != 0){
         vm_page_free(pagetable);
         return 0;
     }
 
-    // trapframe is allocated per-process
-    if(vm_page_insert(pagetable, (void*)p->trapframe, TRAPFRAME, PTE_R | PTE_W) != 0){
+  if(vm_page_insert(pagetable, TRAPFRAME, (uint64)p->trapframe, PTE_R | PTE_W) != 0){
         vm_page_remove(pagetable, TRAMPOLINE, 1, 0);
         vm_page_free(pagetable);
         return 0;

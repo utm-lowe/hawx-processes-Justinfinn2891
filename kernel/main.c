@@ -35,10 +35,10 @@ main()
   plicinit();
   // initialize other kernel subsystems
   proc_init();
-  printf("Testing");
   // load up the user space
   proc_load_user_init();
   // enter the scheduler
+
   scheduler();
 
   panic("Exited Scheduler");
