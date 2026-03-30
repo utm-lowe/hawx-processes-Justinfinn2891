@@ -40,40 +40,26 @@ struct proc proc[NPROC];
 
 // Initialize the proc table, and allocate a page for each process's 
 // kernel stack. Map the stacks in high memory, followed by an invalid guard page.
-void 
-proc_init(void)
+void proc_init(void)
 {
+    struct proc *p;
+    void *page;
 
-  struct proc *p; 
-  void *page; 
+    for(int i = 0; i < NPROC; i++){
+        p = &proc[i];
+        p->state = UNUSED;
+        p->kstack = (uint64) KSTACK(i);
+        p->pid = 0;
+        p->sz = 0;
+        p->pagetable = 0;
+        p->trapframe = vm_page_alloc();
+        memset(p->trapframe, 0, PGSIZE);
+        page = vm_page_alloc();
+        memset(page, 0, PGSIZE);
 
-  for(int i = 0; i < NPROC; i++){
-    p = &proc[i];
-    p->state = UNUSED;
-    
-    p->kstack = (uint64) KSTACK(i);
-
-    page = vm_page_alloc();
-    memset(page, 0, PGSIZE);
-    if(page == 0)
-      panic("faield");
-
-    if(vm_page_insert(kernel_pagetable, page, p->kstack, PTE_R | PTE_W) != 0) {panic("failed");}
-
-
-  }
-
-    // You need to loop over all the proc structs and set up their stacks
-    // This setup requires two steps:
-    //   1.) Use the KSTACK macro to set up the kstack field in the struct
-    //   2.) Allocate a new physical page for the stack and insert it
-    //       into the kernel's page table at the virtual address referred
-    //       to by kstack.
-    // HINTS: This function is a combination of two functions in xv6. 
-    //        I used the following memory functions:
-    //           vm_page_alloc
-    //           vm_page_insert
-    // YOUR CODE HERE
+        if (vm_page_insert(kernel_pagetable, page, p->kstack + PGSIZE, PTE_R | PTE_W) != 0)
+            panic("proc_init: stack map failed");
+    }
 }
 
 
@@ -96,7 +82,7 @@ proc_load_user_init(void)
     p->state = RUNNABLE;
     proc_load_elf(p, bin);
     
-
+    printf("DAWDAWd");
     // Allocate a new process. If there is no process avaialble, panic.
     // Use proc_load_elf to load up the elf string. 
     // As an additional hint, I have defined the variables you need 
@@ -116,7 +102,7 @@ struct proc*
 proc_alloc(void)
 {
 
-
+    printf("DAWDAWd");
   struct proc* p = 0;
 
   for (int i = 0; i < NPROC; i++) {
@@ -171,7 +157,7 @@ proc_alloc(void)
 void 
 proc_free(struct proc *p)
 {
-
+    printf("DAWDAWd");
     if (p->trapframe) {
         vm_page_free(p->trapframe);
         p->trapframe = 0;
@@ -273,34 +259,25 @@ bad:
 //   Use proc_shrink to decrease the zie of the process.
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64 proc_resize(pagetable_t pagetable, uint64 oldsz, uint64 newsz) 
-{
-  
-  struct proc *p = &proc;
-  uint64 r;
-  if(newsz > oldsz)
-    for (uint64 a = PGROUNDUP(oldsz); a < PGROUNDUP(newsz); a += PGSIZE) {
+{    printf("DAWDAWd");
+    if(newsz > oldsz) {
+        for (uint64 a = PGROUNDUP(oldsz); a < PGROUNDUP(newsz); a += PGSIZE) {
             void* page = vm_page_alloc();
             if (!page)
-                return 0; // allocation failed
-                memset(page, 0, PGSIZE);
-            if (vm_page_insert(pagetable, a, (uint64)page, PTE_R | PTE_W | PTE_X | PTE_U) != 0) {
+                return 0;
+
+            memset(page, 0, PGSIZE);
+
+            if (vm_page_insert(pagetable, page, a, PTE_R | PTE_W | PTE_X | PTE_U) != 0) {
                 vm_page_free(page);
-                return 0; // mapping failed
+                return 0;
             }
         }
-  else{
-    proc_shrink(pagetable, oldsz, newsz);
-  }
-
-  if(r == 0)
-    return 0;
-    // Make this behave as above. This is a little bit different from the
-    // xv6 equivalent. What did I change? 
-    //
-    // YOUR CODE HERE
-    return p->sz;
+        return newsz;
+    } else {
+        return proc_shrink(pagetable, oldsz, newsz);
+    }
 }
-
 
 // Given a parent process's page table, copy its memory into a 
 // child's page table. Copies both the page table and the physical
@@ -349,43 +326,27 @@ err:
 static pagetable_t 
 proc_pagetable(struct proc *p)
 {
-    // Create a new pagetable for the process. Do not assign it yet, just
-    // return the pagetable after you create it.
-    // The page table should contain the following entries:
-    //   - Map the trampoline physical address to the TRAMPOLINE virtual address.
-    //     trampoline should be readable and executable.
-    //   - Map the p->trapframe physical address to the TRAPFRAME virtual address.
-    //     The trapframe page should be readable and writable.
-    // The functions I used here were:
-    //    vm_create_pagetable
-    //    vm_page_insert
-    //    vm_page_free
-    //    vm_page_remove
-    // YOUR CODE HERE
-
     pagetable_t pagetable;
+
     pagetable = vm_create_pagetable();
+    if (!pagetable)
+        return 0;
 
-    if(pagetable == 0){
-      return 0;
+    // trampoline is already physical memory
+    if(vm_page_insert(pagetable, (void*)trampoline, TRAMPOLINE, PTE_R | PTE_X) != 0){
+        vm_page_free(pagetable);
+        return 0;
     }
 
-    if(vm_page_insert(pagetable,TRAMPOLINE,(uint64)trampoline, PTE_R | PTE_X) < 0){
-      vm_page_free(pagetable);
-      return 0;
+    // trapframe is allocated per-process
+    if(vm_page_insert(pagetable, (void*)p->trapframe, TRAPFRAME, PTE_R | PTE_W) != 0){
+        vm_page_remove(pagetable, TRAMPOLINE, 1, 0);
+        vm_page_free(pagetable);
+        return 0;
     }
 
-    if(vm_page_insert(pagetable, TRAPFRAME, (uint64)p->trapframe, PTE_R | PTE_W) < 0){
-      vm_page_remove(pagetable, TRAMPOLINE, 1, 0);
-      vm_page_free(pagetable);
-      return 0;
-    }
-    
     return pagetable;
-    return 0;
 }
-
-
 
 // Free a process's page table, and free the
 // physical memory it refers to.
@@ -455,36 +416,22 @@ proc_shrink(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 static int
 proc_loadseg(pagetable_t pagetable, uint64 va, void *bin, uint offset, uint sz)
 {
-  uint i, n;
-  uint64 pa;
+    uint i, n;
+    uint64 pa;
+    pte_t *pte;
 
-  // Load the program segment from the bin array. Note that 
-  // offset could be thought of as the offset into bin. There 
-  // is an equivalent xv6 function which does this using inode 
-  // loading. The secret to converting it is you are going to 
-  // have a line that uses memmove and the following expression:
-  //   bin+offset+i
-  // As an added hint, I have included my variable declarations 
-  // above.
-  // YOUR CODE HERE
-  
- for(i = 0; i < sz; i += PGSIZE) {
+    for(i = 0; i < sz; i += PGSIZE) {
+        pte = walk_pgtable(pagetable, va + i, 0);
+        if(pte == 0 || (*pte & PTE_V) == 0)
+            panic("proc_loadseg: page not mapped");
+
+        pa = PTE2PA(*pte);
 
         n = PGSIZE;
         if(sz - i < PGSIZE)
             n = sz - i;
 
-        pa = (uint64) vm_page_alloc();
-
-        if(pa == 0)
-            return -1;
-
         memmove((void*)pa, (char*)bin + offset + i, n);
-
-        if(vm_page_insert(pagetable, pa, va + i, PTE_R | PTE_X | PTE_U) != 0) {
-            vm_page_free((void*)pa);
-            return -1;
-        }
     }
 
     return 0;
