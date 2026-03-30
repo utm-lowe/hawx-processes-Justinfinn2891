@@ -74,25 +74,20 @@ struct proc*
 proc_load_user_init(void)
 {
     void *bin = &_binary_user_init_start;
-struct proc *p = proc_alloc();
-if(p == 0)
-    panic("proc_load_user_init: alloc failed");
+    struct proc *p = proc_alloc();   
 
-if(proc_load_elf(p, bin) < 0)
-    panic("proc_load_user_init: load failed");
+    if(p == 0)
+        panic("proc_load_user_init: proc_alloc failed");
 
-p->state = RUNNABLE;
-    
-    // Allocate a new process. If there is no process avaialble, panic.
-    // Use proc_load_elf to load up the elf string. 
-    // As an additional hint, I have defined the variables you need 
-    // for you. The bin pointer points to the embedded BLOB which
-    // contains the program image for init.
-    // YOUR CODE HERE
+    if(proc_load_elf(p, bin) < 0){
+        proc_free(p);
+        panic("proc_load_user_init: proc_load_elf failed");
+    }
+
+    p->state = RUNNABLE;
 
     return p;
 }
-
 
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
@@ -151,9 +146,6 @@ proc_free(struct proc *p)
 
     p->pid = 0;
     p->sz = 0;
-
-    printf("Yes");
-
     p->state = UNUSED;
 }
 
@@ -167,10 +159,13 @@ proc_load_elf(struct proc *p, void *bin)
 {
     struct elfhdr elf;
     struct proghdr ph;
-    int i, off;
+    int i;
     uint64 sz = 0;
     pagetable_t pagetable = 0;
-    pagetable_t old_pagetable;
+
+    if(p->trapframe == 0)
+        return -1;
+
     elf = *(struct elfhdr*) bin;
     if(elf.magic != ELF_MAGIC)
         goto bad;
@@ -178,15 +173,12 @@ proc_load_elf(struct proc *p, void *bin)
     if((pagetable = proc_pagetable(p)) == 0)
         goto bad;
 
-    off = elf.phoff;
     for(i = 0; i < elf.phnum; i++){
-        ph = *(struct proghdr*)(bin + off + (i * sizeof(struct proghdr)));
-        
+        ph = *(struct proghdr*)(bin + elf.phoff + i * sizeof(struct proghdr));
         if(ph.type != ELF_PROG_LOAD)
             continue;
-        if(ph.memsz < ph.filesz)
-            goto bad;
-        if(ph.vaddr + ph.memsz < ph.vaddr)
+
+        if(ph.memsz < ph.filesz || ph.vaddr + ph.memsz < ph.vaddr)
             goto bad;
 
         uint64 newsz;
@@ -194,33 +186,32 @@ proc_load_elf(struct proc *p, void *bin)
             goto bad;
         sz = newsz;
 
-   
+        // Copy segment contents from ELF
         if(proc_loadseg(pagetable, ph.vaddr, bin, ph.off, ph.filesz) < 0)
             goto bad;
-
     }
 
-
     sz = PGROUNDUP(sz);
-    uint64 newsz;
-    if((newsz = proc_resize(pagetable, sz, sz + 2 * PGSIZE)) == 0)
+
+    uint64 oldsz = sz;
+    uint64 newsz = proc_resize(pagetable, oldsz, oldsz + 2*PGSIZE);
+    if(newsz == 0)
         goto bad;
     sz = newsz;
-    
 
-    proc_guard(pagetable, sz - 2 * PGSIZE);
-    
-    uint64 sp = sz;
-    uint64 stackbase = sp - PGSIZE;
+    proc_guard(pagetable, oldsz);
 
-    old_pagetable = p->pagetable;
+    uint64 stack_top = oldsz + 2*PGSIZE;
+    p->trapframe->sp = stack_top;
+
+    if(p->pagetable)
+        proc_free_pagetable(p->pagetable, p->sz);
+
     p->pagetable = pagetable;
     p->sz = sz;
-    p->trapframe->epc = elf.entry; 
-    p->trapframe->sp = sp;       
 
-    if(old_pagetable)
-        proc_free_pagetable(old_pagetable, p->sz); 
+    // Set entry point
+    p->trapframe->epc = elf.entry;
 
     return 0;
 
@@ -238,31 +229,43 @@ bad:
 //   Use proc_shrink to decrease the zie of the process.
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64 proc_resize(pagetable_t pagetable, uint64 oldsz, uint64 newsz) 
-{    
-    if(newsz > oldsz) {
-    for (uint64 a = PGROUNDUP(oldsz); a < newsz; a += PGSIZE) {
+{
+    if (newsz > oldsz) {
+        uint64 start = PGROUNDUP(oldsz);
+        uint64 a;
 
-        pte_t *pte = walk_pgtable(pagetable, a, 0);
-        if (pte && (*pte & PTE_V)) {
-            continue;
+        for (a = start; a < newsz; a += PGSIZE) {
+
+            pte_t *pte = walk_pgtable(pagetable, a, 0);
+            if (pte && (*pte & PTE_V)) {
+                continue;
+            }
+
+            void *page = vm_page_alloc();
+            if (page == 0)
+                goto fail;
+
+            if (vm_page_insert(pagetable, a, (uint64)page,
+                PTE_R | PTE_W | PTE_X | PTE_U) != 0) {
+                vm_page_free(page);
+                goto fail;
+            }
         }
 
-        void* page = vm_page_alloc();
-        if (page == 0)
-            return 0;
+        return newsz;
 
-        if (vm_page_insert(pagetable, a, (uint64)page,
-            PTE_R | PTE_W | PTE_X | PTE_U) != 0) {
-            vm_page_free(page);
-            return 0;
-        }
+    fail:
+    if (a > start) {
+        vm_page_remove(pagetable, start, (a - start) / PGSIZE, 1);
     }
-    return newsz;
-    } else {
+    return 0;
+
+    } else if (newsz < oldsz) {
         return proc_shrink(pagetable, oldsz, newsz);
     }
-}
 
+    return oldsz;
+}
 // Given a parent process's page table, copy its memory into a 
 // child's page table. Copies both the page table and the physical
 // memory.
@@ -275,22 +278,18 @@ proc_vmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk_pgtable(old, i, 0)) == 0)
-      panic("proc_vmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("proc_vmcopy: page not present");
+    if((pte = walk_pgtable(old, i, 0)) == 0) continue; 
+    if((*pte & PTE_V) == 0) continue;            
     
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
 
-    if((mem = vm_page_alloc()) == 0)
-      goto err;
-
+    if((mem = vm_page_alloc()) == 0) goto err;
     memmove(mem, (char*)pa, PGSIZE);
 
-   if(vm_page_insert(new, i, (uint64)mem, flags) != 0){
-        vm_page_free(mem);
-        goto err;
+    if(vm_page_insert(new, i, (uint64)mem, flags) != 0){
+      vm_page_free(mem);
+      goto err;
     }
   }
   return 0;
@@ -299,7 +298,6 @@ err:
   vm_page_remove(new, 0, i / PGSIZE, 1);
   return -1;
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Static Helper Functions
@@ -341,14 +339,7 @@ proc_free_pagetable(pagetable_t pagetable, uint64 sz)
     vm_page_remove(pagetable, 0, PGROUNDUP(sz) / PGSIZE, 1);
   }
   proc_freewalk(pagetable);
-    // 1.) Remove the TRAMPOLINE and TRAPFRAME pages
-    // 2.) Remove all the user memory pages, freeing their 
-    //    physical memory.
-    // 3.) Free the user page table.
-    // Functions Used: vm_page_remove, proc_freewalk
-    // YOUR CODE HERE
 }
-
 
 
 // Recursively free page-table pages.
@@ -356,12 +347,11 @@ proc_free_pagetable(pagetable_t pagetable, uint64 sz)
 static void 
 proc_freewalk(pagetable_t pagetable)
 {
-  // there are 2^9 = 512 PTEs in a page table.
   for(int i = 0; i < 512; i++){
     pte_t pte = pagetable[i];
     if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
-      // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
+      
       proc_freewalk((pagetable_t)child);
       pagetable[i] = 0;
     } else if(pte & PTE_V){
@@ -414,6 +404,9 @@ proc_loadseg(pagetable_t pagetable, uint64 va, void *bin, uint offset, uint sz)
             n = sz - i;
 
         memmove((void*)pa, (char*)bin + offset + i, n);
+        if (n < PGSIZE) {
+          memset((void*)(pa + n), 0, PGSIZE - n);
+        }
     }
 
     return 0;
@@ -445,3 +438,4 @@ struct proc *proc_find(int pid) {
   } 
   return 0;
 }
+
