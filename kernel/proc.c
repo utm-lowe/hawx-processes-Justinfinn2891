@@ -272,31 +272,51 @@ uint64 proc_resize(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 int 
 proc_vmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
-  pte_t *pte;
-  uint64 pa, i;
-  uint flags;
-  char *mem;
+ 
+  uint64 i;
+
+  pte_t pte;
+
+  uint64 page, flags;
+
+  void *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk_pgtable(old, i, 0)) == 0) continue; 
-    if((*pte & PTE_V) == 0) continue;            
-    
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
+    pte = walk_pgtable(old,i,0);
 
-    if((mem = vm_page_alloc()) == 0) goto err;
-    memmove(mem, (char*)pa, PGSIZE);
+    if(pte == 0){
+      goto error;
+    }
 
-    if(vm_page_insert(new, i, (uint64)mem, flags) != 0){
+    if((pte & PTE_V) == 0){
+      goto error;
+    }
+
+    page = PTE2PA(pte);
+    flags = PTE_FLAGS(pte);
+
+    mem = vm_page_alloc();
+
+    if(mem == 0){
+      goto error;
+    }
+
+    memmove(mem, (void*)page, PGSIZE);
+
+    if(vm_page_insert(new, i, (uint64)mem, flags) < 0){
+
+        
       vm_page_free(mem);
-      goto err;
+
+      goto error;
     }
   }
+
   return 0;
 
-err:
-  vm_page_remove(new, 0, i / PGSIZE, 1);
-  return -1;
+  error:
+    proc_shrink(new, i, 0);
+    return -1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
